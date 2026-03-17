@@ -1,12 +1,17 @@
 BrickFlow
-This blueprint will be used as an authoritative contract for later NinjaTrader implementation.
 Locked implementation assumptions
 
 Use tick data only on both series.
 
-Interpret ninZaRenko pairs as Brick Size / Trend Threshold: execution chart = 13/2, structure chart = 34/5. The mirrored trader manual describes that notation and also describes Break at EOD as the default/recommended intraday setting.
+Interpret ninZaRenko pairs as Brick Size / Trend Threshold:
 
-The free ninZaRenko bar prints real wick highs/lows, but the vendor separately states the free version uses artificial opens; KingRenko shares the same settings and identical close prices when matched. For that reason, BrickFlow uses completed-brick closes for structure and completed wick extremes for stops/triggers, and uses no open-based rule.
+Primary execution chart: 13/2
+
+Higher-timeframe structure chart: 34/5
+
+Use completed-brick closes for structure and completed wick extremes for stops and triggers.
+
+Use no open-based structure rule.
 
 Session template is fixed to CME US Index Futures RTH.
 
@@ -15,6 +20,20 @@ Break at EOD = True on both charts.
 No EMA/ZLEMA filter is used.
 
 All logic is closed-brick only. The forming brick is ignored.
+
+At each session open, both the 34/5 and 13/2 confirmed swing registries reset. The 34/5 active leg, the eligible 13/2 pullback-sequence counter, and any in-progress 13/2 impulse/pullback qualification state also reset.
+
+“Next tick after close” means the first tick received after the relevant completed-brick close has been fully processed.
+
+If a 34/5 brick and a 13/2 brick complete on the same incoming tick:
+
+process the 34/5 close first,
+
+then process the 13/2 close,
+
+then evaluate any entry/exit action.
+
+Any updated 34/5 invalidation or block condition governs the 13/2 decision on that same tick.
 
 Definitions
 
@@ -26,44 +45,70 @@ Confirmed swing high = the highest close of a bullish same-color run of at least
 
 Confirmed swing low = the lowest close of a bearish same-color run of at least 2 bricks, confirmed only when the first bullish brick closes after that run.
 
+The confirmed swing high/low definition applies identically to both the 34/5 chart and the 13/2 chart, using only completed bricks on the relevant chart.
+
+Latest confirmed swing high/low = the most recently confirmed one as of the current completed brick close on that chart, with no lookahead.
+
 Extreme swing high/low = the wick high/low of the brick that created the confirmed swing high/low.
 
-Break of structure = a completed brick close beyond the prior confirmed swing high/low.
+Break of structure = a completed brick close beyond the prior confirmed swing high/low on the same chart.
 
-34/5 active leg = the period after a fresh 34/5 break of structure until invalidation.
+Fresh 34/5 break of structure = the first completed 34/5 close beyond a newly confirmed 34/5 swing high/low that has not already been broken by close since that swing was confirmed. Repeated closes beyond the same already-broken level are not fresh.
+
+34/5 active leg = the period beginning at a fresh 34/5 break of structure and ending only when the earliest of the following occurs:
+
+session reset,
+
+a completed 34/5 close back through the most recent confirmed 34/5 swing low in an up-leg,
+
+a completed 34/5 close back through the most recent confirmed 34/5 swing high in a down-leg,
+
+a 3rd consecutive countertrend 34/5 brick.
+
+A later fresh same-direction 34/5 break that occurs before one of those leg-ending events does not start a new 34/5 active leg and does not reset the pullback-sequence counter.
 
 13/2 pullback sequence = a 1-brick or 2-brick countertrend correction with no interleaved same-direction brick.
+
+Eligible 13/2 pullback sequence = a 13/2 pullback sequence that fully satisfies all Section 3 pullback requirements and is complete at the close of its final countertrend brick while the corresponding 34/5 active leg remains valid.
+
+The eligible-pullback counter increments exactly once, at the close of the final countertrend brick that completes that eligible sequence, whether or not a later trigger passes or a trade executes.
+
+A sequence that violates any Section 3 pullback requirement before completion never becomes eligible and does not increment the counter.
+
+No lower wick = the completed brick has zero lower shadow length as rendered by the chart series.
+
+No upper wick = the completed brick has zero upper shadow length as rendered by the chart series.
 
 All trend/structure comparisons use closes unless a rule explicitly says wick.
 
 1. MARKET REGIME DEFINITION (34/5)
 Valid uptrend
 
-At least 2 confirmed 34/5 swing highs and 2 confirmed 34/5 swing lows exist.
+At least 2 confirmed 34/5 swing highs and at least 2 confirmed 34/5 swing lows exist.
 
 The latest confirmed 34/5 swing high is above the prior confirmed 34/5 swing high.
 
 The latest confirmed 34/5 swing low is above the prior confirmed 34/5 swing low.
 
-A completed bullish 34/5 brick has already closed above the most recent confirmed 34/5 swing high.
+A fresh bullish 34/5 break of structure has occurred: a completed bullish 34/5 brick has closed above the most recent confirmed 34/5 swing high.
 
-Since that fresh bullish break, the current bearish correction count is 0, 1, or 2 completed bearish 34/5 bricks.
+Since the most recent fresh bullish 34/5 break, the current bearish correction count is 0, 1, or 2 completed bearish 34/5 bricks.
 
 Valid downtrend
 
-At least 2 confirmed 34/5 swing highs and 2 confirmed 34/5 swing lows exist.
+At least 2 confirmed 34/5 swing highs and at least 2 confirmed 34/5 swing lows exist.
 
 The latest confirmed 34/5 swing high is below the prior confirmed 34/5 swing high.
 
 The latest confirmed 34/5 swing low is below the prior confirmed 34/5 swing low.
 
-A completed bearish 34/5 brick has already closed below the most recent confirmed 34/5 swing low.
+A fresh bearish 34/5 break of structure has occurred: a completed bearish 34/5 brick has closed below the most recent confirmed 34/5 swing low.
 
-Since that fresh bearish break, the current bullish correction count is 0, 1, or 2 completed bullish 34/5 bricks.
+Since the most recent fresh bearish 34/5 break, the current bullish correction count is 0, 1, or 2 completed bullish 34/5 bricks.
 
 Invalid / no-trade regime
 
-Fewer than 2 confirmed swing highs or swing lows exist.
+Any state with fewer than 2 confirmed 34/5 swing highs or fewer than 2 confirmed 34/5 swing lows is a single unified no-trade state.
 
 Latest swings are structurally mixed:
 
@@ -71,7 +116,9 @@ higher high with lower low, or
 
 lower high with higher low.
 
-The last 6 completed 34/5 bricks contain no same-color run of at least 3 bricks.
+The last 6 completed 34/5 bricks are evaluated as a rolling window on every completed 34/5 brick. If they contain no same-color run of at least 3 bricks, the regime is invalid.
+
+If fewer than 6 completed 34/5 bricks exist in the current session, this 6-brick compression test is treated as not passed.
 
 Current countertrend correction reaches 3 consecutive opposite-color 34/5 bricks.
 
@@ -129,7 +176,9 @@ That impulse must break above the most recent confirmed 13/2 swing high by close
 
 After that breakout close, one additional bullish 13/2 close must occur before any pullback begins.
 
-Of the last 3 bullish impulse bricks, at least 2 must have no lower wick.
+“The last 3 bullish impulse bricks” means the 3 most recent bullish bricks of the impulse run immediately before the pullback begins, including the required follow-through brick.
+
+Of those last 3 bullish impulse bricks, at least 2 must have no lower wick.
 
 The pullback that follows must be exactly 1 or 2 consecutive bearish bricks.
 
@@ -141,9 +190,15 @@ above the most recent confirmed 13/2 swing low,
 
 above the most recent confirmed 34/5 swing low.
 
+Pullback validity is evaluated and locked at the close of the final bearish pullback brick.
+
+The next bullish brick is then evaluated independently as the trigger candidate against that locked pullback state.
+
 If a 3rd bearish 13/2 brick prints, momentum qualification is lost.
 
-If a bullish brick appears before the trigger but the pullback rules are no longer intact, the setup resets.
+Violation of any single pullback condition listed above means the pullback rules are no longer intact and the setup resets.
+
+If a bullish brick appears before the trigger and the pullback rules are no longer intact, the setup resets.
 
 Short momentum qualification
 
@@ -155,7 +210,9 @@ That impulse must break below the most recent confirmed 13/2 swing low by close.
 
 After that breakout close, one additional bearish 13/2 close must occur before any pullback begins.
 
-Of the last 3 bearish impulse bricks, at least 2 must have no upper wick.
+“The last 3 bearish impulse bricks” means the 3 most recent bearish bricks of the impulse run immediately before the pullback begins, including the required follow-through brick.
+
+Of those last 3 bearish impulse bricks, at least 2 must have no upper wick.
 
 The pullback that follows must be exactly 1 or 2 consecutive bullish bricks.
 
@@ -167,9 +224,15 @@ below the most recent confirmed 13/2 swing high,
 
 below the most recent confirmed 34/5 swing high.
 
+Pullback validity is evaluated and locked at the close of the final bullish pullback brick.
+
+The next bearish brick is then evaluated independently as the trigger candidate against that locked pullback state.
+
 If a 3rd bullish 13/2 brick prints, momentum qualification is lost.
 
-If a bearish brick appears before the trigger but the pullback rules are no longer intact, the setup resets.
+Violation of any single pullback condition listed above means the pullback rules are no longer intact and the setup resets.
+
+If a bearish brick appears before the trigger and the pullback rules are no longer intact, the setup resets.
 
 Brick speed / expansion logic
 
@@ -181,9 +244,9 @@ Any impulse that breaks structure but does not print a follow-through brick is n
 
 Wick and overlap rules
 
-Long impulse: at least 2 of last 3 impulse bricks must have no lower wick.
+Long impulse: at least 2 of the last 3 bullish impulse bricks, as defined above, must have no lower wick.
 
-Short impulse: at least 2 of last 3 impulse bricks must have no upper wick.
+Short impulse: at least 2 of the last 3 bearish impulse bricks, as defined above, must have no upper wick.
 
 A qualified pullback may contain only countertrend bricks.
 
@@ -206,15 +269,13 @@ have no lower wick,
 
 close while the 34/5 long filter remains valid.
 
-Entry timing:
+Signal is confirmed only at the trigger brick close.
 
-signal is confirmed only at the trigger brick close,
+Submit the long entry on the first subsequent tick after that close.
 
-submit the long entry on the next tick after that close,
+No intrabar anticipation.
 
-no intrabar anticipation,
-
-no entry at a projected next-bar open.
+No entry at a projected next-bar open.
 
 If that first bullish brick fails any trigger condition, the setup expires and a new 13/2 impulse must form.
 
@@ -234,15 +295,13 @@ have no upper wick,
 
 close while the 34/5 short filter remains valid.
 
-Entry timing:
+Signal is confirmed only at the trigger brick close.
 
-signal is confirmed only at the trigger brick close,
+Submit the short entry on the first subsequent tick after that close.
 
-submit the short entry on the next tick after that close,
+No intrabar anticipation.
 
-no intrabar anticipation,
-
-no entry at a projected next-bar open.
+No entry at a projected next-bar open.
 
 If that first bearish brick fails any trigger condition, the setup expires and a new 13/2 impulse must form.
 
@@ -267,7 +326,13 @@ a completed 34/5 brick closes below the most recent confirmed 34/5 swing low, or
 
 the 34/5 chart prints a 3rd consecutive bearish correction brick.
 
-On structural invalidation, exit any remaining long on the next tick.
+At the close of that invalidating 34/5 brick:
+
+the regime becomes invalid,
+
+new long entries are blocked immediately.
+
+Exit any remaining long on the first subsequent tick.
 
 Short stop logic
 
@@ -289,13 +354,19 @@ a completed 34/5 brick closes above the most recent confirmed 34/5 swing high, o
 
 the 34/5 chart prints a 3rd consecutive bullish correction brick.
 
-On structural invalidation, exit any remaining short on the next tick.
+At the close of that invalidating 34/5 brick:
+
+the regime becomes invalid,
+
+new short entries are blocked immediately.
+
+Exit any remaining short on the first subsequent tick.
 
 6. PROFIT MANAGEMENT
 
 Define 1R as the distance from actual filled entry price to initial stop price.
 
-Position must be divisible into 2 equal parts.
+Position must be divisible into 2 equal whole-number parts.
 
 Partial exit
 
@@ -309,9 +380,13 @@ The remainder is the runner.
 
 Structural trailing
 
-Long runner:
+For longs, tighter means the numerically higher stop price.
 
-trail to 1 tick below each newly confirmed 13/2 higher low formed after entry.
+For shorts, tighter means the numerically lower stop price.
+
+Long runner
+
+Trail to 1 tick below each newly confirmed 13/2 higher low formed after entry.
 
 A new higher low is confirmed only after:
 
@@ -319,15 +394,15 @@ a 1-brick or 2-brick bearish pullback forms,
 
 then a bullish brick closes above the highest high of that pullback.
 
-New stop = the tighter of:
+New stop = the higher of:
 
 current stop,
 
 1 tick below that confirmed higher-low pullback.
 
-Short runner:
+Short runner
 
-trail to 1 tick above each newly confirmed 13/2 lower high formed after entry.
+Trail to 1 tick above each newly confirmed 13/2 lower high formed after entry.
 
 A new lower high is confirmed only after:
 
@@ -335,7 +410,7 @@ a 1-brick or 2-brick bullish pullback forms,
 
 then a bearish brick closes below the lowest low of that pullback.
 
-New stop = the tighter of:
+New stop = the lower of:
 
 current stop,
 
@@ -350,6 +425,8 @@ structural trail stop is hit,
 34/5 structural invalidation occurs,
 
 session flat time is reached.
+
+If the +1.5R partial has not filled when any full-exit condition occurs, the entire remaining position exits in full and the breakeven-transfer rule does not activate.
 
 7. RISK CONTROLS
 
@@ -379,9 +456,11 @@ No pyramiding.
 
 No reversal-in-place.
 
-After a stop-out, the next trade must come from a new qualified 13/2 impulse and new qualified pullback.
+Configured entry size must be an even whole-number contract size of at least 2. If not, block all entries.
 
-If a trade is open and a force-flat condition occurs, exit on the next tick.
+After any stop-out, any in-progress 13/2 impulse or 13/2 pullback qualification state is discarded. The next trade must begin from a new 13/2 impulse and a new qualified pullback.
+
+If a trade is open and a force-flat condition occurs, exit on the first subsequent tick.
 
 8. FAILURE MODES
 Common false signals
@@ -429,15 +508,3 @@ Daily trade cap hit.
 Outside time windows.
 
 Any open trade in the opposite direction.
-
-Tweaks / additions that should be locked before coding
-
-Keep tick data fixed. That is required for the non-repainting intent of this contract.
-
-Keep session template and Break at EOD fixed. Without that, swing counts and daily resets change. The mirrored trader manual describes Break at EOD as default/recommended for intraday use.
-
-Do not use ninZaRenko opens in the strategy. The vendor states the free bar uses artificial opens; the close-based/open-agnostic design above is intentional.
-
-Your chosen pairs are structurally usable but unconventional relative to the mirrored manual’s published best-practice note that Brick Size should ideally be a multiple of Trend Threshold. I left them unchanged because you fixed them in the prompt.
-
-If partial exits are mandatory, live size must be at least 2 contracts. If live size will be 1 contract, the exit model must be changed before implementation.
